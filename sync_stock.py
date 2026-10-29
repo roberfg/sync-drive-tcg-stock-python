@@ -6,6 +6,7 @@ import argparse
 import json
 import re
 import time
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -51,6 +52,11 @@ class CardResult:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--apply", action="store_true", help="Modifica Sheets y el carrito.")
+    parser.add_argument(
+        "--cart-only",
+        action="store_true",
+        help="Agrega al carrito y valida sin modificar Google Sheets.",
+    )
     parser.add_argument(
         "--update-sheet",
         action="store_true",
@@ -228,7 +234,7 @@ def wait_for_card_state(page: Page, timeout: float = 15) -> bool:
 
 def wait_for_cart_quantity(page: Page, expected: int, timeout: float = 15) -> bool:
     """Espera que la página refleje la cantidad total esperada en el carrito."""
-    return wait_until(lambda: read_in_cart(page) >= expected, timeout=timeout)
+    return wait_until(lambda: read_in_cart(page) == expected, timeout=timeout)
 
 
 def login_if_needed(page: Page, solve_challenge: bool) -> None:
@@ -344,10 +350,19 @@ def extract_stock(text: str) -> int | None:
     return None
 
 
+def find_product_form(page: Page) -> Any:
+    """Encuentra el formulario de compra de la carta actual."""
+    return page.locator("form").filter(
+        has_text=re.compile(r"Add to Cart|\d+\s+in\s+Cart|Select Qty", re.IGNORECASE)
+    ).first
+
+
 def read_in_cart(page: Page) -> int:
     """Lee la cantidad ya agregada de la carta principal."""
     cart_pattern = re.compile(r"^\s*(\d+)\s+in\s+Cart\s*$", re.IGNORECASE)
-    controls = page.locator('button, a, [role="button"]')
+    product_form = find_product_form(page)
+    scope = product_form if product_form.count() > 0 else page
+    controls = scope.locator('button, a, [role="button"]')
     for index in range(controls.count()):
         item = controls.nth(index)
         if not item.is_visible():
@@ -356,7 +371,7 @@ def read_in_cart(page: Page) -> int:
         if match:
             return int(match.group(1))
 
-    locator = page.get_by_text(cart_pattern)
+    locator = scope.get_by_text(cart_pattern)
     for index in range(locator.count()):
         item = locator.nth(index)
         if not item.is_visible():
@@ -516,9 +531,12 @@ def read_visible_quantity_menu(page: Page) -> int | None:
     return None
 
 
-def select_visible_quantity_menu(page: Page, quantity: int) -> bool:
+def select_visible_quantity_menu(page: Page, quantity: int, scope: Any | None = None) -> bool:
     """Selecciona una cantidad visible; esa selección confirma el carrito."""
-    grids = page.locator("#selectable")
+    selection_scope = scope if scope is not None else page
+    grids = selection_scope.locator("#selectable")
+    if grids.count() == 0:
+        grids = page.locator("#selectable")
     for grid_index in range(grids.count()):
         grid = grids.nth(grid_index)
         if not grid.is_visible():
@@ -530,14 +548,14 @@ def select_visible_quantity_menu(page: Page, quantity: int) -> bool:
                 option.click()
                 return True
 
-    candidates = page.get_by_text("Select Qty", exact=True)
+    candidates = selection_scope.get_by_text("Select Qty", exact=True)
     for index in range(candidates.count()):
         candidate = candidates.nth(index)
         if not candidate.is_visible():
             continue
         marker_box = candidate.bounding_box()
         if marker_box:
-            quantity_candidates = page.get_by_text(str(quantity), exact=True)
+            quantity_candidates = selection_scope.get_by_text(str(quantity), exact=True)
             nearby: list[tuple[float, Any]] = []
             marker_x = marker_box["x"] + marker_box["width"] / 2
             marker_y = marker_box["y"] + marker_box["height"] / 2
@@ -775,7 +793,7 @@ def clear_cart(
     retry_delay: float = 5,
     action_delay: float = 3,
 ) -> None:
-    cart_url = os.getenv("STORE_CART_URL", "https://www.mtgmintcard.com/cart")
+    cart_url = os.getenv("STORE_CART_URL", FINAL_CART_URL)
     empty_selector = os.getenv("STORE_EMPTY_CART_SELECTOR")
     attempt = 0
     while True:
@@ -894,6 +912,125 @@ def open_final_cart(page: Page, solve_challenge: bool, retry_delay: float) -> No
             time.sleep(max(0.5, retry_delay))
 
 
+def normalize_cart_url(url: str) -> str:
+    """Normaliza una URL para comparar enlaces de producto del carrito."""
+    return url.split("#", 1)[0].rstrip("/").casefold()
+
+
+def normalize_cart_name(name: str) -> str:
+    """Normaliza nombres para ordenar y mostrar comparaciones del carrito."""
+    decomposed = unicodedata.normalize("NFKD", name)
+    without_accents = "".join(
+        character for character in decomposed
+        if not unicodedata.combining(character)
+    )
+    return " ".join(without_accents.casefold().split())
+
+
+def read_cart_link_entry(link: Any) -> dict[str, Any] | None:
+    """Lee URL, cantidad y texto de la línea de carrito asociada a un enlace."""
+    return link.evaluate(
+        """
+        (element) => {
+            const node = element.closest('tr');
+            if (!node) return null;
+            const quantityControl = node.querySelector(
+                'input[name*="quantity" i], input[id*="quantity" i], '
+                + 'input[name*="qty" i], input[id*="qty" i], '
+                + 'select[name*="quantity" i], select[id*="quantity" i], '
+                + 'select[name*="qty" i], select[id*="qty" i]'
+            ) || node.querySelector('select');
+            const text = (node.innerText || '').trim();
+            if (quantityControl) {
+                return {
+                    url: element.href,
+                    quantity: quantityControl.value || quantityControl.getAttribute('data-value'),
+                    text,
+                };
+            }
+            if (/quantity|qty/i.test(text)) {
+                const match = text.match(/(?:quantity|qty)\\D{0,15}(\\d+)/i);
+                if (match) {
+                    return {url: element.href, quantity: match[1], text};
+                }
+            }
+            return null;
+        }
+        """
+    )
+
+
+def verify_final_cart(
+    page: Page,
+    expected: list[tuple[CardRow, int]],
+) -> bool:
+    """Comprueba que el carrito contiene las cartas de A en orden alfabético."""
+    expected_items = sorted(
+        ((card, quantity) for card, quantity in expected if quantity > 0),
+        key=lambda item: normalize_cart_name(item[0].name),
+    )
+    expected_by_url = {
+        normalize_cart_url(card.url): (card, quantity)
+        for card, quantity in expected_items
+    }
+    actual_items: list[tuple[str, int | None, str]] = []
+    links = page.locator("a[href]")
+    seen_urls: set[str] = set()
+    for index in range(links.count()):
+        link = links.nth(index)
+        if not link.is_visible():
+            continue
+        entry = read_cart_link_entry(link)
+        if not entry:
+            continue
+        url = str(entry.get("url") or "")
+        quantity_value = entry.get("quantity")
+        text = str(entry.get("text") or "")
+        normalized_url = normalize_cart_url(url)
+        if normalized_url in seen_urls:
+            continue
+        seen_urls.add(normalized_url)
+        quantity = parse_quantity(quantity_value) if quantity_value is not None else None
+        if quantity is not None:
+            actual_items.append((normalized_url, quantity, text))
+
+    problems: list[str] = []
+    expected_urls = [normalize_cart_url(card.url) for card, _ in expected_items]
+    actual_urls = [url for url, _, _ in actual_items]
+    expected_names = [normalize_cart_name(card.name) for card, _ in expected_items]
+    actual_names = [
+        normalize_cart_name(expected_by_url[url][0].name)
+        if url in expected_by_url
+        else normalize_cart_name(text)
+        for url, _, text in actual_items
+    ]
+    if actual_names != expected_names:
+        problems.append(
+            f"orden alfabético distinto; esperado={expected_names}; encontrado={actual_names}"
+        )
+    if sorted(actual_urls) != sorted(expected_urls):
+        problems.append(
+            f"cartas distintas; esperado_urls={expected_urls}; encontrado_urls={actual_urls}"
+        )
+
+    actual_by_url = {url: quantity for url, quantity, _ in actual_items}
+    for card, expected_quantity in expected_items:
+        actual_quantity = actual_by_url.get(normalize_cart_url(card.url))
+        if actual_quantity != expected_quantity:
+            problems.append(
+                f"{card.name}: esperado={expected_quantity}, "
+                f"en_carrito={actual_quantity if actual_quantity is not None else 'ausente'}"
+            )
+
+    if problems:
+        print("VERIFICACION FALLIDA | carrito final")
+        for problem in problems:
+            print(f"  - {problem}")
+        return False
+    print(f"VERIFICACION OK | {len(expected_items)} cartas y cantidades confirmadas")
+    return True
+
+
 def add_to_cart(page: Page, card: CardRow, quantity: int, action_delay: float = 3) -> None:
     product_form = page.locator("form").filter(
         has_text=re.compile(r"Add to Cart|\d+\s+in\s+Cart", re.IGNORECASE)
@@ -910,7 +1047,7 @@ def add_to_cart(page: Page, card: CardRow, quantity: int, action_delay: float = 
         add_button.click()
         if not wait_for_quantity_grid(page):
             raise RuntimeError(f"No apareció la cuadrícula de cantidades para {card.name}.")
-    if select_visible_quantity_menu(page, quantity):
+    if select_visible_quantity_menu(page, quantity, button_scope):
         if not wait_for_cart_quantity(page, quantity):
             raise RuntimeError(
                 f"La tienda no confirmó {quantity} unidades en el carrito para {card.name}."
@@ -938,13 +1075,14 @@ def update_sheet(
     card: CardRow,
     result: CardResult,
     update_prices: bool = True,
+    cart_quantity: int | None = None,
 ) -> None:
     if result.price is None and result.available is None:
         return
     quantity_range = f"'{title}'!{column_letter(ACTUAL_QUANTITY_COLUMN + 1)}{card.row_number}"
     unit_price_range = f"'{title}'!{column_letter(UNIT_PRICE_COLUMN + 1)}{card.row_number}"
     remaining_stock = (
-        max(0, result.available - result.in_cart)
+        max(0, result.available - (result.in_cart if cart_quantity is None else cart_quantity))
         if result.available is not None
         else None
     )
@@ -1017,6 +1155,8 @@ def main() -> None:
     if not cards:
         raise RuntimeError("No se encontraron filas con URLs en la tabla.")
     if arguments.limit is not None:
+        if arguments.limit < 1:
+            raise RuntimeError("--limit debe ser un entero positivo.")
         cards = cards[: arguments.limit]
 
     with sync_playwright() as playwright:
@@ -1051,7 +1191,9 @@ def main() -> None:
         )
         page = context.new_page()
         login_if_needed(page, arguments.solve_challenge)
-        if arguments.apply:
+        cart_mode = arguments.apply or arguments.cart_only
+        expected_cart: list[tuple[CardRow, int]] = []
+        if cart_mode:
             clear_cart(
                 page,
                 arguments.solve_challenge,
@@ -1068,8 +1210,11 @@ def main() -> None:
             )
             if result.error:
                 print(f"AVISO | fila {card.row_number} | {card.name} | {result.error}")
+            # --apply vacía y confirma el carrito antes de procesar las cartas.
+            # No se debe arrastrar un contador leído de la página a la siguiente carta.
+            cart_quantity = 0 if cart_mode else result.in_cart
             remaining_stock = (
-                max(0, result.available - result.in_cart)
+                max(0, result.available - cart_quantity)
                 if result.available is not None
                 else None
             )
@@ -1082,27 +1227,29 @@ def main() -> None:
             stock_text = result.available if result.available is not None else "desconocido"
             actual_text = actual_quantity if actual_quantity is not None else "sin determinar"
             target_cart_quantity = (
-                result.in_cart + actual_quantity
+                cart_quantity + actual_quantity
                 if actual_quantity is not None
                 else None
             )
             target_text = target_cart_quantity if target_cart_quantity is not None else "sin determinar"
-            print(f"OK | fila {card.row_number} | {card.name} | stock={stock_text} | en_carrito={result.in_cart} | restante={remaining_stock if remaining_stock is not None else 'desconocido'} | precio={price_text} | solicitada={card.quantity} | real={actual_text} | total_carrito={target_text}")
-            should_update_sheet = (
-                arguments.apply or arguments.update_sheet or arguments.stock_only
-            )
-            if should_update_sheet and (
+            print(f"OK | fila {card.row_number} | {card.name} | stock={stock_text} | en_carrito={cart_quantity} | restante={remaining_stock if remaining_stock is not None else 'desconocido'} | precio={price_text} | solicitada={card.quantity} | real={actual_text} | total_carrito={target_text}")
+            if cart_mode and actual_quantity is not None:
+                expected_cart.append((card, actual_quantity))
+            should_update_sheet = arguments.apply or arguments.update_sheet or arguments.stock_only
+            if (should_update_sheet or cart_mode) and (
                 result.price is not None or result.available is not None
             ):
-                update_sheet(
-                    sheets_service,
-                    sheet_id,
-                    title,
-                    card,
-                    result,
-                    update_prices=not arguments.stock_only,
-                )
-                if arguments.apply and actual_quantity is not None and actual_quantity > 0:
+                if should_update_sheet:
+                    update_sheet(
+                        sheets_service,
+                        sheet_id,
+                        title,
+                        card,
+                        result,
+                        update_prices=not arguments.stock_only,
+                        cart_quantity=cart_quantity,
+                    )
+                if cart_mode and actual_quantity is not None and actual_quantity > 0:
                     try:
                         add_to_cart(page, card, target_cart_quantity, arguments.cart_action_delay)
                     except Exception as error:
@@ -1117,13 +1264,20 @@ def main() -> None:
                         else:
                             input("Pulsa Enter para cerrar el proceso... ")
                         return
-        if arguments.apply or arguments.update_sheet or arguments.stock_only:
+        verification_ok = True
+        if cart_mode:
+            open_final_cart(page, arguments.solve_challenge, arguments.retry_delay)
+            verification_ok = verify_final_cart(page, expected_cart)
+        elif arguments.headed and not arguments.close_browser:
+            open_final_cart(page, arguments.solve_challenge, arguments.retry_delay)
+        if cart_mode or arguments.update_sheet or arguments.stock_only:
             context.storage_state(path=str(auth_path))
         if arguments.headed and not arguments.close_browser:
-            open_final_cart(page, arguments.solve_challenge, arguments.retry_delay)
             keep_browser_open()
         else:
             browser.close()
+        if cart_mode and not verification_ok:
+            raise RuntimeError("La verificación del carrito final no coincide con la hoja.")
 
 
 if __name__ == "__main__":

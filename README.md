@@ -96,11 +96,13 @@ Consulta la tienda y muestra los valores sin modificar la hoja:
 .venv\Scripts\python.exe sync_stock.py --headed --solve-challenge --probe-stock --stock-only
 ```
 
-### Probar una sola carta
+### Probar un número limitado de cartas
 
 ```powershell
-.venv\Scripts\python.exe sync_stock.py --headed --solve-challenge --probe-stock --update-sheet --limit 1
+.venv\Scripts\python.exe sync_stock.py --headed --solve-challenge --probe-stock --limit 5
 ```
+
+`--limit` acepta cualquier entero positivo y limita el procesamiento a las primeras filas seleccionadas.
 
 ### Agregar cantidades reales al carrito
 
@@ -109,6 +111,16 @@ Consulta la tienda y muestra los valores sin modificar la hoja:
 ```
 
 `--apply` es destructivo: vacía el carrito usando `STORE_EMPTY_CART_SELECTOR`, consulta cada carta y selecciona la cantidad real en `Select Qty`. No usar hasta validar los selectores y la simulación.
+
+Para probar el carrito sin modificar Google Sheets, usa `--cart-only`:
+
+```powershell
+.venv\Scripts\python.exe sync_stock.py --headed --solve-challenge --probe-stock --cart-only --limit 5
+```
+
+Este modo vacía el carrito, agrega únicamente las cantidades de `A` de las cinco filas procesadas y valida el carrito final.
+
+La validación final comprueba que las cartas de `A` aparezcan en orden alfabético por nombre y con la cantidad exacta. Las cartas con el mismo nombre se diferencian mediante su URL y pueden aparecer en cualquier orden entre sí.
 
 Después de pulsar `Remove All` se acepta la confirmación y se espera el estado de carrito vacío. Después de seleccionar `Select Qty` se espera a que el botón refleje `N in Cart`; no se usa una pausa fija para avanzar.
 
@@ -127,6 +139,8 @@ Si el formulario de login de la tienda usa controles no estándar, configura `ST
 Si una página carga incompleta, el script reintenta indefinidamente. Las esperas principales se basan en estados de la página y tienen un timeout máximo. `Ctrl+C` detiene la ejecución.
 
 En modo visible, el navegador navega al carrito final `https://www.mtgmintcard.com/shopping-cart` y permanece abierto al terminar para permitir trabajo manual. Usa `--close-browser` si quieres cerrarlo automáticamente.
+
+Si la validación del carrito falla, se muestran las cartas faltantes, sobrantes o con cantidades diferentes y el proceso termina con error.
 
 ## Verificar login y carrito
 

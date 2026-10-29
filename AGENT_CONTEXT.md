@@ -35,7 +35,7 @@ La fila 1 contiene encabezados. Las cartas empiezan en la fila 2.
 - Si el precio web es menor que el precio original, `D` se marca en verde.
 - Si el precio web es mayor que el precio original, `D` se marca en rojo.
 - `E` no se toca.
-- El carrito solo se modifica con `--apply`.
+- El carrito solo se modifica con `--apply` o `--cart-only`.
 - Al vaciar el carrito se acepta la confirmación de `Remove All` y se espera la confirmación de carrito vacío.
 - Después de seleccionar `Select Qty` se espera a que el botón refleje `N in Cart` para confirmar la adición.
 
@@ -45,7 +45,7 @@ La fila 1 contiene encabezados. Las cartas empiezan en la fila 2.
 2. Detectar `Out of Stock`.
 3. Si hay `Add to Cart`, pulsarlo para mostrar `Select Qty`.
 4. Leer el máximo de la secuencia de cantidades visible.
-5. En modo `--apply`, seleccionar la cantidad real; esa selección confirma la adición al carrito.
+5. En modo `--apply` o `--cart-only`, seleccionar la cantidad real; esa selección confirma la adición al carrito.
 
 El primer click en `Add to Cart` solo revela el selector según el comportamiento observado. La selección de `Select Qty` es la acción que agrega al carrito.
 
@@ -55,8 +55,9 @@ El primer click en `Add to Cart` solo revela el selector según el comportamient
 - `--update-sheet`: actualiza `A`, `D` y colores, sin tocar el carrito.
 - `--stock-only`: actualiza solo `A` y el color de stock.
 - `--apply`: actualiza la hoja y manipula el carrito.
+- `--cart-only`: manipula y valida el carrito sin modificar Google Sheets.
 - `--probe-stock`: pulsa `Add to Cart` para revelar el stock.
-- `--limit 1`: procesa solo la primera carta.
+- `--limit N`: procesa solo las primeras `N` filas, donde `N` debe ser un entero positivo.
 - `--headed --solve-challenge`: abre navegador visible y permite resolver AWS WAF.
 
 ## Reintentos
@@ -68,6 +69,8 @@ La lectura de cada carta se reintenta indefinidamente cuando la página está in
 Se usa Playwright Chromium. Con `--headed`, `screeninfo` detecta monitores y el navegador se abre por defecto en el monitor 2. Se puede cambiar con `--monitor` o `STORE_BROWSER_MONITOR`.
 
 En modo visible, el navegador navega al carrito final y permanece abierto al terminar. `--close-browser` habilita el cierre automático.
+
+En `--apply` y `--cart-only`, el carrito final se valida contra las cantidades de `A`. Las cartas se comparan en orden alfabético por nombre; las cartas con el mismo nombre se identifican mediante su URL y no requieren un orden específico entre ediciones.
 
 ## Test De Google Sheets
 
@@ -82,6 +85,7 @@ En modo visible, el navegador navega al carrito final y permanece abierto al ter
 - MTGMintCard puede mostrar un desafío AWS WAF.
 - La página puede cargar de forma incompleta o cambiar su HTML.
 - El modo `--apply` requiere configurar correctamente el selector para vaciar el carrito.
+- El modo `--cart-only` también vacía el carrito, pero no escribe en Google Sheets.
 - Las credenciales de la tienda pueden requerir una sesión manual si hay CAPTCHA o 2FA.
 - Si el formulario de login cambia, se pueden configurar selectores CSS mediante `STORE_USERNAME_SELECTOR`, `STORE_PASSWORD_SELECTOR` y `STORE_LOGIN_SUBMIT_SELECTOR`.
 
