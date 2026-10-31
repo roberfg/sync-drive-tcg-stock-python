@@ -18,5 +18,5 @@ def resolve_sheet_id(sheet_url: str | None = None, sheet_id: str | None = None) 
     if sheet_id and sheet_id.strip():
         return sheet_id.strip()
     raise ValueError(
-        "Configura GOOGLE_SHEET_URL o GOOGLE_SHEET_ID, o usa --sheet-url/--sheet-id."
+        "Configura GOOGLE_SHEET_URL o GOOGLE_SHEET_ID en el archivo .env."
     )
